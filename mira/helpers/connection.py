@@ -127,10 +127,16 @@ class Connection:
             )
             
             # Get MTU size properly to avoid warning
+            mtu = 'N/A'
             try:
-                mtu = await self._client.get_mtu() if hasattr(self._client, 'get_mtu') else getattr(self._client, 'mtu_size', 'N/A')
+                # Try async get_mtu first (preferred method)
+                if hasattr(self._client, 'get_mtu'):
+                    mtu = await self._client.get_mtu()
+                # Fallback to property access, but suppress warnings
+                elif hasattr(self._client, '_mtu_size'):
+                    mtu = self._client._mtu_size
             except Exception:
-                mtu = 'N/A'
+                pass  # MTU not critical, just use N/A
             
             logger.info(f"✓ Successfully connected to device at {self._address}")
             logger.info(f"✓ Connection established - Device: {self._peripheral.name}, MTU: {mtu}, RSSI: {getattr(self._peripheral, 'rssi', 'N/A')} dBm")
@@ -536,7 +542,7 @@ class Connection:
                 logger.debug(f"Successfully read {char_name}: {result}")
                 return result
             except BleakCharacteristicNotFoundError as e:
-                logger.warning(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
+                logger.debug(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     # Exponential backoff with cap: delay increases with each attempt
                     delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
@@ -549,7 +555,7 @@ class Connection:
                         except Exception:
                             pass
                 else:
-                    logger.error(f"Failed to read {char_name} after {max_retries} attempts")
+                    logger.debug(f"Failed to read {char_name} after {max_retries} attempts")
                     raise
             except BleakError as e:
                 logger.warning(f"BLE error reading {char_name}: {e} (attempt {attempt + 1}/{max_retries})")
