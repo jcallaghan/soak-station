@@ -23,8 +23,9 @@ async def async_setup_entry(hass, config_entry):
     connection = Connection(hass, device_address, client_id, client_slot)
     
     try:
-        logger.debug("Connecting to device")
+        logger.debug(f"Connecting to device at {device_address} (Bluetooth proxy supported)")
         await connection.connect()
+        logger.info(f"Device connection established successfully at {device_address}")
     except Exception as e:
         logger.error(f"Failed to connect to device at {device_address}: {e}")
         raise ConfigEntryNotReady(f"Unable to connect to device: {e}") from e
@@ -82,16 +83,16 @@ async def async_setup_entry(hass, config_entry):
     # Set up periodic polling every 20 seconds
     async def poll_device_state(now):
         """Poll device state periodically with error handling and reconnection logic."""
-        logger.debug("Polling device state")
+        logger.debug(f"Polling device state for {device_address}")
         
         # Check if client is still connected
         if not connection.is_connected():
-            logger.warning("Device not connected, attempting reconnection")
+            logger.warning(f"Device at {device_address} not connected, attempting reconnection (Bluetooth proxy compatible)")
             try:
                 await connection.reconnect()
-                logger.info("Reconnection successful")
+                logger.info(f"Reconnection successful for device at {device_address}")
             except Exception as e:
-                logger.error(f"Reconnection failed: {e}")
+                logger.error(f"Reconnection failed for device at {device_address}: {e}")
                 return
         
         try:

@@ -52,12 +52,18 @@ class SoakStationTimerStateSensor(SensorEntity):
         Gets the current timer state and updates Home Assistant if the state
         has changed.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         new_state = self._data.timer_state
         
         # Only update HA state if it changed
         if self._state != new_state:
+            logger.debug(f"Timer state changing from {self._state} to {new_state} for device {self._address}")
             self._state = new_state
             self.async_write_ha_state()
+        else:
+            logger.debug(f"Timer state unchanged: {self._state} for device {self._address}")
 
     async def async_update(self):
         """Update sensor state when Home Assistant polls.

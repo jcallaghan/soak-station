@@ -87,7 +87,8 @@ class Connection:
         Args:
             client: The BleakClientWithServiceCache that disconnected
         """
-        logger.warning(f"Device at {self._address} disconnected")
+        logger.warning(f"Device at {self._address} disconnected unexpectedly")
+        logger.debug(f"Disconnect callback triggered for {self._address} - client will attempt reconnection on next poll")
 
     def set_client_data(self, client_id: int, client_slot: int) -> None:
         """Set the client ID and slot after pairing.
@@ -113,6 +114,8 @@ class Connection:
             logger.debug(f"Attempting to connect to device at {self._address} using bleak-retry-connector")
             self._peripheral = await self._get_ble_device()
             
+            logger.debug(f"Device discovered via Bluetooth: {self._peripheral.name} at {self._peripheral.address} (RSSI: {getattr(self._peripheral, 'rssi', 'N/A')} dBm)")
+            
             # Use bleak-retry-connector for reliable connection establishment
             self._client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -123,6 +126,7 @@ class Connection:
             )
             
             logger.info(f"Successfully connected to device at {self._address}")
+            logger.debug(f"Connection established - Device: {self._peripheral.name}, MTU: {getattr(self._client, 'mtu_size', 'N/A')}, Connected: {self._client.is_connected}")
         except Exception as e:
             logger.error(f"Failed to connect to device at {self._address}: {e}")
             raise
@@ -136,14 +140,14 @@ class Connection:
         Raises:
             ConnectionError: If device not found
         """
-        logger.debug(f"Discovering device at address {self._address}")
+        logger.debug(f"Discovering device at address {self._address} (supports Bluetooth proxies)")
         device = async_ble_device_from_address(
             self._hass, self._address, connectable=True
         )
         if not device:
-            logger.debug(f"Device not found at address {self._address}")
+            logger.warning(f"Device not found at address {self._address}. Ensure device is powered on and in range, or check Bluetooth proxy connection.")
             raise ConnectionError("Device not found")
-        logger.debug(f"Found device: {device.name} ({device.address})")
+        logger.debug(f"Found device: {device.name} ({device.address}) - Device is connectable")
         return device
 
     def is_connected(self) -> bool:
@@ -152,7 +156,9 @@ class Connection:
         Returns:
             bool: True if connected, False otherwise
         """
-        return self._client is not None and self._client.is_connected
+        connected = self._client is not None and self._client.is_connected
+        logger.debug(f"Connection state check for {self._address}: {'Connected' if connected else 'Disconnected'}")
+        return connected
 
     async def reconnect(self) -> None:
         """Disconnect and reconnect to device with retry logic.
@@ -172,11 +178,13 @@ class Connection:
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
-        logger.debug("Disconnecting from device")
+        logger.debug(f"Disconnecting from device at {self._address}")
         self._peripheral = None
         if self._client and self._client.is_connected:
             await self._client.disconnect()
-            logger.debug("Device disconnected")
+            logger.info(f"Device at {self._address} successfully disconnected")
+        else:
+            logger.debug(f"Device at {self._address} was already disconnected")
 
     async def __aenter__(self) -> "Connection":
         """Connect when entering context."""
