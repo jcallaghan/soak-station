@@ -23,7 +23,8 @@ from homeassistant.components.bluetooth import (
 from .const import (
     MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED,
     UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE,
-    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, SERVICE_DISCOVERY_DELAY
+    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, 
+    SERVICE_DISCOVERY_DELAY, BLUETOOTH_PROXY_DELAY_MULTIPLIER
 )
 from .generic import _get_payload_with_crc, _convert_temperature, _format_bytearray, _split_chunks
 from .notifications import Notifications
@@ -456,7 +457,7 @@ class Connection:
                 services = self._client.services
                 if not services:
                     logger.debug("Services not yet discovered, waiting for service resolution (Bluetooth proxy may need more time)")
-                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY * 2)  # Give extra time for proxies
+                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY * BLUETOOTH_PROXY_DELAY_MULTIPLIER)
                     services = self._client.services
                 
                 logger.debug(f"Found {len(services) if services else 0} services on device")

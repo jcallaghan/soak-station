@@ -178,12 +178,16 @@ class Notifications:
             payload: Packet payload containing device state
         """
         logger.debug(f"Processing device state packet (length: {len(payload)}, bytes: {payload.hex()})")
-        # Validate payload length (need at least 9 bytes: 1 timer + 2 temp + 2 temp + 1 outlet + 1 outlet + 2 remaining)
+        # Validate payload length
+        # Expected layout: [0]=timer state, [1:3]=target temp, [3:5]=actual temp,
+        #                  [5]=outlet1, [6]=outlet2, [7:9]=remaining seconds
+        # Total: 9 bytes minimum (some packets may have a 10th byte for future use)
         if len(payload) < 9:
             logger.warning(f"Unexpected payload length for device state: {len(payload)} (expected at least 9)")
             return False
 
-        # Extract timer state from first byte
+        # Extract timer state from byte 0 (fixed bug: was incorrectly using byte 1)
+        # Note: This differs from the 11-byte control packet where byte 0 is the type field
         timer_state: Optional[TimerState] = TIMER_STATE_MAP.get(payload[0])
         if timer_state is None:
             logger.warning(f"Unknown timer state value: {payload[0]} in payload: {payload.hex()}")
