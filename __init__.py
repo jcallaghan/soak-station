@@ -129,7 +129,7 @@ async def async_setup_entry(hass, config_entry):
     async_track_time_interval(hass, poll_device_state, timedelta(seconds=20))
 
     logger.debug("Setting up platform entries")
-    await hass.config_entries.async_forward_entry_setups(config_entry, ["binary_sensor", "sensor", "switch"])
+    await hass.config_entries.async_forward_entry_setups(config_entry, ["binary_sensor", "sensor", "switch", "number"])
     return True
 
 async def async_unload_entry(hass, config_entry):
@@ -137,7 +137,8 @@ async def async_unload_entry(hass, config_entry):
     unload_bin = await hass.config_entries.async_forward_entry_unload(config_entry, "binary_sensor")
     unload_sens = await hass.config_entries.async_forward_entry_unload(config_entry, "sensor")
     unload_sq = await hass.config_entries.async_forward_entry_unload(config_entry, "switch")
-    logger.debug(f"Unloaded platforms - binary_sensor: {unload_bin}, sensor: {unload_sens}, switch: {unload_sq}")
+    unload_num = await hass.config_entries.async_forward_entry_unload(config_entry, "number")
+    logger.debug(f"Unloaded platforms - binary_sensor: {unload_bin}, sensor: {unload_sens}, switch: {unload_sq}, number: {unload_num}")
 
     connection = hass.data[DOMAIN][config_entry.entry_id]["connection"]
     logger.debug("Disconnecting from device")
@@ -145,4 +146,4 @@ async def async_unload_entry(hass, config_entry):
 
     hass.data[DOMAIN].pop(config_entry.entry_id)
     logger.debug("Removed device data from hass.data")
-    return unload_bin and unload_sens
+    return unload_bin and unload_sens and unload_num

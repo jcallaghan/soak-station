@@ -63,13 +63,15 @@ class SoakStationOutletSwitch(SwitchEntity):
         """
         outlets = [self._model.outlet_1_on, self._model.outlet_2_on]
         outlets[self._outlet_number - 1] = new_state
-        await self._connection.control_outlets(outlets[0], outlets[1], temperature=self._model.target_temp or 38)
+        # Use current target temperature from model, default to 38°C if not set
+        temperature = self._model.target_temp if self._model.target_temp else 38.0
+        await self._connection.control_outlets(outlets[0], outlets[1], temperature=temperature)
 
     async def async_turn_on(self, **kwargs):
         """Turn the outlet on.
         
         Sets the appropriate outlet to on state while maintaining the other outlet's
-        current state. Uses a default temperature of 38°C.
+        current state. Uses the current target temperature from the model.
         """
         await self._update_outlet_state(True)
 
@@ -77,7 +79,7 @@ class SoakStationOutletSwitch(SwitchEntity):
         """Turn the outlet off.
         
         Sets the appropriate outlet to off state while maintaining the other outlet's
-        current state. Uses a default temperature of 38°C.
+        current state. Uses the current target temperature from the model.
         """
         await self._update_outlet_state(False)
 
