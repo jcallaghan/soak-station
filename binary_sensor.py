@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 
 from .mira.sensors.outlet_binary_sensor import SoakStationOutletBinarySensor
+from .mira.sensors.combined_outlet_binary_sensor import SoakStationCombinedOutletBinarySensor
 from .const import DOMAIN
 
 async def async_setup_entry(
@@ -34,13 +35,16 @@ async def async_setup_entry(
     config_data = hass.data[DOMAIN][config_entry.entry_id]["data"]
     meta = hass.data[DOMAIN][config_entry.entry_id]["metadata"]
 
-    # Create binary sensors for each outlet
+    # Create binary sensors for each outlet and a combined sensor
     sensors = [
         SoakStationOutletBinarySensor(
             hass, config_data, meta, device_name, address, outlet_num=1
         ),
         SoakStationOutletBinarySensor(
             hass, config_data, meta, device_name, address, outlet_num=2
+        ),
+        SoakStationCombinedOutletBinarySensor(
+            hass, config_data, meta, device_name, address
         )
     ]
 
