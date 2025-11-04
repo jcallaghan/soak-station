@@ -20,8 +20,11 @@ from homeassistant.components.bluetooth import (
     async_ble_device_from_address
 )
 
-from .const import MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED, \
-    UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE
+from .const import (
+    MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED,
+    UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE,
+    MAX_READ_RETRIES, READ_RETRY_DELAY, RECONNECT_DELAY
+)
 from .generic import _get_payload_with_crc, _convert_temperature, _format_bytearray, _split_chunks
 from .notifications import Notifications
 
@@ -143,6 +146,14 @@ class Connection:
         logger.debug(f"Found device: {device.name} ({device.address})")
         return device
 
+    def is_connected(self) -> bool:
+        """Check if the device is currently connected.
+        
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        return self._client is not None and self._client.is_connected
+
     async def reconnect(self) -> None:
         """Disconnect and reconnect to device with retry logic.
         
@@ -152,7 +163,7 @@ class Connection:
         logger.info(f"Initiating reconnection to device at {self._address}")
         try:
             await self.disconnect()
-            await asyncio.sleep(2)  # Allow time for clean BLE state
+            await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
             await self.connect()
             logger.info(f"Successfully reconnected to device at {self._address}")
         except Exception as e:
@@ -406,7 +417,7 @@ class Connection:
         Raises:
             BleakError: If write operation fails
         """
-        if not self._client or not self._client.is_connected:
+        if not self.is_connected():
             raise BleakError("Device not connected")
             
         logger.debug(f"Writing data to device: {_format_bytearray(data)}")
@@ -430,7 +441,7 @@ class Connection:
         logger.debug("Requesting device information")
         
         # Ensure services are resolved before attempting to read
-        if self._client and self._client.is_connected:
+        if self.is_connected():
             try:
                 # Try to get services to ensure they are discovered
                 services = self._client.services
@@ -441,24 +452,23 @@ class Connection:
                 logger.warning(f"Error checking services: {e}")
         
         # Read device info with retry logic
-        max_retries = 3
-        retry_delay = 1.0
-        
-        device_name = await self._read_with_retry(UUID_DEVICE_NAME, "device name", max_retries, retry_delay)
-        manufacturer = await self._read_with_retry(UUID_MANUFACTURER, "manufacturer", max_retries, retry_delay)
-        model_number = await self._read_with_retry(UUID_MODEL_NUMBER, "model number", max_retries, retry_delay)
+        device_name = await self._read_with_retry(UUID_DEVICE_NAME, "device name")
+        manufacturer = await self._read_with_retry(UUID_MANUFACTURER, "manufacturer")
+        model_number = await self._read_with_retry(UUID_MODEL_NUMBER, "model number")
 
         logger.info(f"Device info - name: {device_name}, manufacturer: {manufacturer}, model: {model_number}")
         return {'name': device_name, 'manufacturer': manufacturer, 'model': model_number}
     
-    async def _read_with_retry(self, characteristic: str, char_name: str, max_retries: int = 3, delay: float = 1.0) -> str:
-        """Read a characteristic with retry logic.
+    async def _read_with_retry(self, characteristic: str, char_name: str, 
+                              max_retries: int = MAX_READ_RETRIES, 
+                              base_delay: float = READ_RETRY_DELAY) -> str:
+        """Read a characteristic with exponential backoff retry logic.
 
         Args:
             characteristic: UUID of characteristic to read
             char_name: Human-readable name for logging
             max_retries: Maximum number of retry attempts
-            delay: Delay between retries in seconds
+            base_delay: Base delay between retries (exponentially increased)
 
         Returns:
             str: Decoded string from characteristic
@@ -477,10 +487,12 @@ class Connection:
             except BleakCharacteristicNotFoundError as e:
                 logger.warning(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
-                    logger.debug(f"Waiting {delay}s before retry")
+                    # Exponential backoff: delay increases with each attempt
+                    delay = base_delay * (2 ** attempt)
+                    logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
                     await asyncio.sleep(delay)
                     # Try to ensure services are refreshed
-                    if self._client and self._client.is_connected:
+                    if self.is_connected():
                         try:
                             _ = self._client.services
                         except Exception:
@@ -491,7 +503,9 @@ class Connection:
             except BleakError as e:
                 logger.warning(f"BLE error reading {char_name}: {e} (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
-                    logger.debug(f"Waiting {delay}s before retry")
+                    # Exponential backoff: delay increases with each attempt
+                    delay = base_delay * (2 ** attempt)
+                    logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
                     await asyncio.sleep(delay)
                 else:
                     logger.error(f"Failed to read {char_name} after {max_retries} attempts due to BLE error")
@@ -499,6 +513,7 @@ class Connection:
             except Exception as e:
                 logger.error(f"Unexpected error reading {char_name}: {e}")
                 if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
                     await asyncio.sleep(delay)
                 else:
                     raise

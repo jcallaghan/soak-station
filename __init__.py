@@ -85,7 +85,7 @@ async def async_setup_entry(hass, config_entry):
         logger.debug("Polling device state")
         
         # Check if client is still connected
-        if not connection._client or not connection._client.is_connected:
+        if not connection.is_connected():
             logger.warning("Device not connected, attempting reconnection")
             try:
                 await connection.reconnect()
