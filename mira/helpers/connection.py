@@ -9,13 +9,22 @@ import logging
 import struct
 from typing import Optional, Tuple, Dict, Any, Union
 from bleak import BLEDevice, BleakClient
+from bleak.exc import BleakError, BleakCharacteristicNotFoundError
+
+from bleak_retry_connector import (
+    establish_connection,
+    BleakClientWithServiceCache,
+)
 
 from homeassistant.components.bluetooth import (
     async_ble_device_from_address
 )
 
-from .const import MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED, \
-    UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE
+from .const import (
+    MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED,
+    UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE,
+    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, SERVICE_DISCOVERY_DELAY
+)
 from .generic import _get_payload_with_crc, _convert_temperature, _format_bytearray, _split_chunks
 from .notifications import Notifications
 
@@ -38,7 +47,7 @@ class Connection:
         _peripheral: BLE device instance once connected
         _client_id: Unique identifier for this client
         _client_slot: Slot number assigned by device
-        _client: BleakClient instance for BLE communication
+        _client: BleakClientWithServiceCache instance for BLE communication
         _notifications: Handler for device notifications
         _response_event: Event for synchronizing responses
         _response_data: Storage for response data
@@ -61,7 +70,7 @@ class Connection:
         self._peripheral: Optional[BLEDevice] = None
         self._client_id: Optional[int] = client_id
         self._client_slot: Optional[int] = client_slot
-        self._client: Optional[BleakClient] = None
+        self._client: Optional[BleakClientWithServiceCache] = None
         self._notifications: Optional[Notifications] = None
 
         self._response_event: asyncio.Event = asyncio.Event()
@@ -71,6 +80,14 @@ class Connection:
         self._partial_payload: bytearray = bytearray()
         self._reassembly_client_slot: Optional[int] = None 
         self._reassembly_payload_length: Optional[int] = None
+
+    def _on_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        """Handle disconnection from device.
+
+        Args:
+            client: The BleakClientWithServiceCache that disconnected
+        """
+        logger.warning(f"Device at {self._address} disconnected")
 
     def set_client_data(self, client_id: int, client_slot: int) -> None:
         """Set the client ID and slot after pairing.
@@ -82,30 +99,33 @@ class Connection:
         self._client_id = client_id
         self._client_slot = client_slot
 
-    async def connect(self, retries: int = 10, delay: float = 1.0) -> None:
-        """Establish BLE connection to device.
+    async def connect(self, retries: int = 3, delay: float = 1.0) -> None:
+        """Establish BLE connection to device using bleak-retry-connector.
 
         Args:
-            retries: Number of connection attempts
-            delay: Delay between retries in seconds
+            retries: Number of connection attempts (used by bleak-retry-connector)
+            delay: Delay between retries in seconds (used by bleak-retry-connector)
 
         Raises:
             Exception: If connection fails after all retries
         """
-        for attempt in range(retries):
-            try:
-                logger.debug(f"Attempting to connect to device at {self._address} (attempt {attempt + 1}/{retries})")
-                self._peripheral = await self._get_ble_device()
-                self._client = BleakClient(self._peripheral)
-                await self._client.connect()
-                logger.debug(f"Successfully connected to device at {self._address}")
-                return
-            except Exception as e:
-                if attempt == retries - 1:
-                    logger.debug(f"Failed to connect after {retries} attempts: {e}")
-                    raise
-                logger.debug(f"Connection attempt {attempt + 1} failed: {e}")
-                await asyncio.sleep(delay)
+        try:
+            logger.debug(f"Attempting to connect to device at {self._address} using bleak-retry-connector")
+            self._peripheral = await self._get_ble_device()
+            
+            # Use bleak-retry-connector for reliable connection establishment
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._peripheral,
+                self._peripheral.address,
+                disconnected_callback=self._on_disconnect,
+                max_attempts=retries,
+            )
+            
+            logger.info(f"Successfully connected to device at {self._address}")
+        except Exception as e:
+            logger.error(f"Failed to connect to device at {self._address}: {e}")
+            raise
 
     async def _get_ble_device(self) -> BLEDevice:
         """Get BLE device from address.
@@ -126,13 +146,29 @@ class Connection:
         logger.debug(f"Found device: {device.name} ({device.address})")
         return device
 
+    def is_connected(self) -> bool:
+        """Check if the device is currently connected.
+        
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        return self._client is not None and self._client.is_connected
+
     async def reconnect(self) -> None:
-        """Disconnect and reconnect to device."""
-        logger.debug("Initiating reconnection")
-        await self.disconnect()
-        await asyncio.sleep(1)  # small delay to allow clean BLE state
-        await self.connect()
-        logger.debug("Reconnection completed")
+        """Disconnect and reconnect to device with retry logic.
+        
+        Raises:
+            Exception: If reconnection fails after all attempts
+        """
+        logger.info(f"Initiating reconnection to device at {self._address}")
+        try:
+            await self.disconnect()
+            await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
+            await self.connect()
+            logger.info(f"Successfully reconnected to device at {self._address}")
+        except Exception as e:
+            logger.error(f"Reconnection failed for device at {self._address}: {e}")
+            raise
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
@@ -373,28 +409,114 @@ class Connection:
             await self._write(chunk)
 
     async def _write(self, data: Union[bytes, bytearray]) -> None:
-        """Write data to device.
+        """Write data to device with error handling.
 
         Args:
             data: Data to write
+            
+        Raises:
+            BleakError: If write operation fails
         """
+        if not self.is_connected():
+            raise BleakError("Device not connected")
+            
         logger.debug(f"Writing data to device: {_format_bytearray(data)}")
-        await self._client.write_gatt_char(UUID_WRITE, bytes(data), response=False)
-        logger.debug("Write completed")
+        try:
+            await self._client.write_gatt_char(UUID_WRITE, bytes(data), response=False)
+            logger.debug("Write completed")
+        except BleakError as e:
+            logger.error(f"Failed to write to device: {e}")
+            raise
 
     async def get_device_info(self) -> Dict[str, str]:
-        """Get basic device information.
+        """Get basic device information with retry logic.
 
         Returns:
             dict: Device name, manufacturer and model
+
+        Raises:
+            BleakCharacteristicNotFoundError: If characteristic is not available after retries
+            BleakError: If reading fails after retries
         """
         logger.debug("Requesting device information")
-        device_name = (await self._read(UUID_DEVICE_NAME)).decode('UTF-8')
-        manufacturer = (await self._read(UUID_MANUFACTURER)).decode('UTF-8')
-        model_number = (await self._read(UUID_MODEL_NUMBER)).decode('UTF-8')
+        
+        # Ensure services are resolved before attempting to read
+        if self.is_connected():
+            try:
+                # Try to get services to ensure they are discovered
+                services = self._client.services
+                if not services:
+                    logger.debug("Services not yet discovered, waiting for service resolution")
+                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY)
+            except Exception as e:
+                logger.warning(f"Error checking services: {e}")
+        
+        # Read device info with retry logic
+        device_name = await self._read_with_retry(UUID_DEVICE_NAME, "device name")
+        manufacturer = await self._read_with_retry(UUID_MANUFACTURER, "manufacturer")
+        model_number = await self._read_with_retry(UUID_MODEL_NUMBER, "model number")
 
-        logger.debug(f"Device info - name: {device_name}, manufacturer: {manufacturer}, model: {model_number}")
+        logger.info(f"Device info - name: {device_name}, manufacturer: {manufacturer}, model: {model_number}")
         return {'name': device_name, 'manufacturer': manufacturer, 'model': model_number}
+    
+    async def _read_with_retry(self, characteristic: str, char_name: str, 
+                              max_retries: int = MAX_READ_RETRIES, 
+                              base_delay: float = READ_RETRY_DELAY) -> str:
+        """Read a characteristic with exponential backoff retry logic.
+
+        Args:
+            characteristic: UUID of characteristic to read
+            char_name: Human-readable name for logging
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay between retries (exponentially increased)
+
+        Returns:
+            str: Decoded string from characteristic
+
+        Raises:
+            BleakCharacteristicNotFoundError: If characteristic is not found after all retries
+            BleakError: If reading fails after all retries
+        """
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"Reading {char_name} (attempt {attempt + 1}/{max_retries})")
+                value = await self._read(characteristic)
+                result = value.decode('UTF-8')
+                logger.debug(f"Successfully read {char_name}: {result}")
+                return result
+            except BleakCharacteristicNotFoundError as e:
+                logger.warning(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    # Exponential backoff with cap: delay increases with each attempt
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
+                    logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
+                    await asyncio.sleep(delay)
+                    # Try to ensure services are refreshed
+                    if self.is_connected():
+                        try:
+                            _ = self._client.services
+                        except Exception:
+                            pass
+                else:
+                    logger.error(f"Failed to read {char_name} after {max_retries} attempts")
+                    raise
+            except BleakError as e:
+                logger.warning(f"BLE error reading {char_name}: {e} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    # Exponential backoff with cap: delay increases with each attempt
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
+                    logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Failed to read {char_name} after {max_retries} attempts due to BLE error")
+                    raise
+            except Exception as e:
+                logger.error(f"Unexpected error reading {char_name}: {e}")
+                if attempt < max_retries - 1:
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
     async def request_client_details(self, client_slot: int) -> None:
         """Request details about a specific client slot.
