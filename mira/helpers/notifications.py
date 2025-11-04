@@ -177,24 +177,24 @@ class Notifications:
             slot: Client slot number
             payload: Packet payload containing device state
         """
-        logger.debug("Processing device state packet")
-        # Validate payload length
-        if len(payload) < 8:
-            logger.debug(f"Unexpected payload length for device state: {len(payload)}")
+        logger.debug(f"Processing device state packet (length: {len(payload)}, bytes: {payload.hex()})")
+        # Validate payload length (need at least 9 bytes: 1 timer + 2 temp + 2 temp + 2 outlets + 2 remaining)
+        if len(payload) < 9:
+            logger.warning(f"Unexpected payload length for device state: {len(payload)} (expected at least 9)")
             return False
 
-        # Extract timer state
-        timer_state: Optional[TimerState] = TIMER_STATE_MAP.get(payload[1])
+        # Extract timer state from first byte
+        timer_state: Optional[TimerState] = TIMER_STATE_MAP.get(payload[0])
         if timer_state is None:
-            logger.debug(f"Unknown timer state value: {payload[1]}")
+            logger.warning(f"Unknown timer state value: {payload[0]} in payload: {payload.hex()}")
             return False
 
         # Extract temperature and state information
         target_temperature: float = _convert_temperature_reverse(payload[1:3])
         actual_temperature: float = _convert_temperature_reverse(payload[3:5])
-        remaining_seconds: int = struct.unpack(">H", payload[7:9])[0]
         outlet_state_1: bool = payload[5] == OUTLET_RUNNING
         outlet_state_2: bool = payload[6] == OUTLET_RUNNING
+        remaining_seconds: int = struct.unpack(">H", payload[7:9])[0]
 
         logger.debug(f"Device state - timer: {timer_state}, target temp: {target_temperature}, "
                     f"actual temp: {actual_temperature}, remaining: {remaining_seconds}s, "
