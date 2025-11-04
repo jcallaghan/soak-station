@@ -41,6 +41,7 @@ async def async_setup_entry(hass, config_entry):
         logger.debug(f"Updated device metadata with info: {info}")
     except BleakCharacteristicNotFoundError as e:
         logger.error(f"Device characteristics not found. The device may not be fully connected or compatible: {e}")
+        logger.info("If using a Bluetooth proxy, ensure the proxy is online and the device is in range. The device may need to be restarted or put into pairing mode.")
         await connection.disconnect()
         raise ConfigEntryNotReady(f"Device characteristics not available: {e}") from e
     except BleakError as e:

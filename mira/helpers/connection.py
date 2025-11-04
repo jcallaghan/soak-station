@@ -449,13 +449,21 @@ class Connection:
         logger.debug("Requesting device information")
         
         # Ensure services are resolved before attempting to read
+        # This is especially important when using Bluetooth proxies
         if self.is_connected():
             try:
                 # Try to get services to ensure they are discovered
                 services = self._client.services
                 if not services:
-                    logger.debug("Services not yet discovered, waiting for service resolution")
-                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY)
+                    logger.debug("Services not yet discovered, waiting for service resolution (Bluetooth proxy may need more time)")
+                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY * 2)  # Give extra time for proxies
+                    services = self._client.services
+                
+                logger.debug(f"Found {len(services) if services else 0} services on device")
+                if services:
+                    # Log available services for debugging
+                    for service in services:
+                        logger.debug(f"Service: {service.uuid}")
             except Exception as e:
                 logger.warning(f"Error checking services: {e}")
         
