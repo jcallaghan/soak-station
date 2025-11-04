@@ -126,8 +126,15 @@ class Connection:
                 max_attempts=retries,
             )
             
-            logger.info(f"Successfully connected to device at {self._address}")
-            logger.debug(f"Connection established - Device: {self._peripheral.name}, MTU: {getattr(self._client, 'mtu_size', 'N/A')}, Connected: {self._client.is_connected}")
+            # Get MTU size properly to avoid warning
+            try:
+                mtu = await self._client.get_mtu() if hasattr(self._client, 'get_mtu') else getattr(self._client, 'mtu_size', 'N/A')
+            except Exception:
+                mtu = 'N/A'
+            
+            logger.info(f"✓ Successfully connected to device at {self._address}")
+            logger.info(f"✓ Connection established - Device: {self._peripheral.name}, MTU: {mtu}, RSSI: {getattr(self._peripheral, 'rssi', 'N/A')} dBm")
+            logger.debug(f"Connection details - Address: {self._address}, Connected: {self._client.is_connected}")
         except Exception as e:
             logger.error(f"Failed to connect to device at {self._address}: {e}")
             raise
@@ -460,7 +467,9 @@ class Connection:
                     await asyncio.sleep(SERVICE_DISCOVERY_DELAY * BLUETOOTH_PROXY_DELAY_MULTIPLIER)
                     services = self._client.services
                 
-                logger.debug(f"Found {len(services) if services else 0} services on device")
+                # Count services safely (BleakGATTServiceCollection doesn't support len())
+                service_count = sum(1 for _ in services) if services else 0
+                logger.debug(f"Found {service_count} services on device")
                 if services:
                     # Log available services for debugging
                     for service in services:
@@ -469,12 +478,37 @@ class Connection:
                 logger.warning(f"Error checking services: {e}")
         
         # Read device info with retry logic
-        device_name = await self._read_with_retry(UUID_DEVICE_NAME, "device name")
-        manufacturer = await self._read_with_retry(UUID_MANUFACTURER, "manufacturer")
-        model_number = await self._read_with_retry(UUID_MODEL_NUMBER, "model number")
+        # Some devices may not expose standard BLE characteristics, so use fallbacks
+        device_name = await self._read_with_retry_or_default(UUID_DEVICE_NAME, "device name", "Mira Device")
+        manufacturer = await self._read_with_retry_or_default(UUID_MANUFACTURER, "manufacturer", "Mira")
+        model_number = await self._read_with_retry_or_default(UUID_MODEL_NUMBER, "model number", "SoakStation")
 
         logger.info(f"Device info - name: {device_name}, manufacturer: {manufacturer}, model: {model_number}")
         return {'name': device_name, 'manufacturer': manufacturer, 'model': model_number}
+    
+    async def _read_with_retry_or_default(self, characteristic: str, char_name: str, default_value: str,
+                                         max_retries: int = MAX_READ_RETRIES, 
+                                         base_delay: float = READ_RETRY_DELAY) -> str:
+        """Read a characteristic with retry logic, returning a default value if not available.
+        
+        Args:
+            characteristic: UUID of characteristic to read
+            char_name: Human-readable name for logging
+            default_value: Default value to return if characteristic not found
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay between retries (exponentially increased)
+            
+        Returns:
+            str: Decoded string from characteristic or default value
+        """
+        try:
+            return await self._read_with_retry(characteristic, char_name, max_retries, base_delay)
+        except BleakCharacteristicNotFoundError:
+            logger.info(f"Characteristic {char_name} not available, using default: {default_value}")
+            return default_value
+        except BleakError as e:
+            logger.warning(f"Failed to read {char_name}, using default: {default_value}. Error: {e}")
+            return default_value
     
     async def _read_with_retry(self, characteristic: str, char_name: str, 
                               max_retries: int = MAX_READ_RETRIES, 

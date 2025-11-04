@@ -23,9 +23,9 @@ async def async_setup_entry(hass, config_entry):
     connection = Connection(hass, device_address, client_id, client_slot)
     
     try:
-        logger.debug(f"Connecting to device at {device_address} (Bluetooth proxy supported)")
+        logger.info(f"Connecting to device at {device_address} (Bluetooth proxy supported)")
         await connection.connect()
-        logger.info(f"Device connection established successfully at {device_address}")
+        logger.info(f"✓ Device connection established successfully at {device_address}")
     except Exception as e:
         logger.error(f"Failed to connect to device at {device_address}: {e}")
         raise ConfigEntryNotReady(f"Unable to connect to device: {e}") from e
@@ -34,10 +34,11 @@ async def async_setup_entry(hass, config_entry):
     metadata = SoakStationMetadata()
     
     try:
-        logger.debug("Getting device info")
+        logger.info("Getting device info...")
         info = await connection.get_device_info()
         info['device_address'] = device_address
         metadata.update_device_identity(**info)
+        logger.info(f"✓ Device identified: {info.get('name', 'Unknown')} (Manufacturer: {info.get('manufacturer', 'Unknown')}, Model: {info.get('model', 'Unknown')})")
         logger.debug(f"Updated device metadata with info: {info}")
     except BleakCharacteristicNotFoundError as e:
         logger.error(f"Device characteristics not found. The device may not be fully connected or compatible: {e}")
@@ -64,13 +65,14 @@ async def async_setup_entry(hass, config_entry):
 
     # Start requesting info
     try:
-        logger.debug("Requesting technical info")
+        logger.info("Requesting technical info...")
         await connection.request_technical_info()
         await metadata.wait_for_technical_info()
-        logger.debug("Technical info received")
+        logger.info(f"✓ Technical info received - SW versions: Valve {metadata.valve_sw_version}, BT {metadata.bt_sw_version}, UI {metadata.ui_sw_version}")
 
-        logger.debug("Requesting initial device state")
+        logger.info("Requesting initial device state...")
         await connection.request_device_state()
+        logger.info("✓ Initial device state received")
     except Exception as e:
         logger.warning(f"Failed to get initial device state (will retry in polling): {e}")
 
@@ -122,6 +124,7 @@ async def async_setup_entry(hass, config_entry):
         except Exception as e:
             logger.error(f"Unexpected error polling device state: {e}")
 
+    logger.info(f"✓ SoakStation setup complete for {device_address}")
     logger.info("Setting up periodic polling every 20 seconds")
     async_track_time_interval(hass, poll_device_state, timedelta(seconds=20))
 
