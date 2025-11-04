@@ -1,4 +1,7 @@
+import logging
 from homeassistant.components.sensor import SensorEntity
+
+logger = logging.getLogger(__name__)
 
 
 class SoakStationTimerStateSensor(SensorEntity):
@@ -52,9 +55,6 @@ class SoakStationTimerStateSensor(SensorEntity):
         Gets the current timer state and updates Home Assistant if the state
         has changed.
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        
         new_state = self._data.timer_state
         
         # Only update HA state if it changed

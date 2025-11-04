@@ -178,7 +178,7 @@ class Notifications:
             payload: Packet payload containing device state
         """
         logger.debug(f"Processing device state packet (length: {len(payload)}, bytes: {payload.hex()})")
-        # Validate payload length (need at least 9 bytes: 1 timer + 2 temp + 2 temp + 2 outlets + 2 remaining)
+        # Validate payload length (need at least 9 bytes: 1 timer + 2 temp + 2 temp + 1 outlet + 1 outlet + 2 remaining)
         if len(payload) < 9:
             logger.warning(f"Unexpected payload length for device state: {len(payload)} (expected at least 9)")
             return False
