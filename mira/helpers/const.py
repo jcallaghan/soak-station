@@ -4,7 +4,9 @@ TIMEOUT = 1
 # Connection retry settings
 MAX_READ_RETRIES = 3
 READ_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 10.0  # Maximum delay for exponential backoff
 RECONNECT_DELAY = 2.0
+SERVICE_DISCOVERY_DELAY = 1.0
 
 # BLE Service UUIDs
 UUID_DEVICE_NAME = "00002a00-0000-1000-8000-00805f9b34fb"

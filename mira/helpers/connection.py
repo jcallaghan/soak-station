@@ -23,7 +23,7 @@ from homeassistant.components.bluetooth import (
 from .const import (
     MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED,
     UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE,
-    MAX_READ_RETRIES, READ_RETRY_DELAY, RECONNECT_DELAY
+    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, SERVICE_DISCOVERY_DELAY
 )
 from .generic import _get_payload_with_crc, _convert_temperature, _format_bytearray, _split_chunks
 from .notifications import Notifications
@@ -85,7 +85,7 @@ class Connection:
         """Handle disconnection from device.
 
         Args:
-            client: The BleakClient that disconnected
+            client: The BleakClientWithServiceCache that disconnected
         """
         logger.warning(f"Device at {self._address} disconnected")
 
@@ -447,7 +447,7 @@ class Connection:
                 services = self._client.services
                 if not services:
                     logger.debug("Services not yet discovered, waiting for service resolution")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY)
             except Exception as e:
                 logger.warning(f"Error checking services: {e}")
         
@@ -487,8 +487,8 @@ class Connection:
             except BleakCharacteristicNotFoundError as e:
                 logger.warning(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
-                    # Exponential backoff: delay increases with each attempt
-                    delay = base_delay * (2 ** attempt)
+                    # Exponential backoff with cap: delay increases with each attempt
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
                     logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
                     await asyncio.sleep(delay)
                     # Try to ensure services are refreshed
@@ -503,8 +503,8 @@ class Connection:
             except BleakError as e:
                 logger.warning(f"BLE error reading {char_name}: {e} (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
-                    # Exponential backoff: delay increases with each attempt
-                    delay = base_delay * (2 ** attempt)
+                    # Exponential backoff with cap: delay increases with each attempt
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
                     logger.debug(f"Waiting {delay}s before retry (exponential backoff)")
                     await asyncio.sleep(delay)
                 else:
@@ -513,7 +513,7 @@ class Connection:
             except Exception as e:
                 logger.error(f"Unexpected error reading {char_name}: {e}")
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
                     await asyncio.sleep(delay)
                 else:
                     raise
