@@ -59,9 +59,9 @@ async def async_setup_entry(hass, config_entry):
     data_model = SoakStationData()
     logger.debug("Created data model")
 
-    # Subscribe
+    # Subscribe to notifications
     notifications = Notifications(model=data_model, metadata=metadata)
-    connection.subscribe(notifications)
+    await connection.subscribe(notifications)
     logger.debug("Subscribed notifications handler")
 
     # Start requesting info

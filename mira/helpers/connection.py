@@ -196,6 +196,12 @@ class Connection:
                 await self.disconnect()
                 await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
                 await self.connect()
+                
+                # Re-subscribe to notifications after reconnection
+                if self._notifications:
+                    logger.debug("Re-subscribing to notifications after reconnection")
+                    await self.subscribe(self._notifications)
+                
                 logger.info(f"Successfully reconnected to device at {self._address}")
             except Exception as e:
                 logger.error(f"Reconnection failed for device at {self._address}: {e}")
@@ -259,7 +265,7 @@ class Connection:
         except ValueError as e:
             logger.debug(f"Invalid packet: {e}")
 
-    def subscribe(self, notifications: Notifications) -> None:
+    async def subscribe(self, notifications: Notifications) -> None:
         """Subscribe to device notifications.
 
         Args:
@@ -274,8 +280,9 @@ class Connection:
             else:
                 self._handle_new_packet(data, notifications)
 
-        # Start notification listener
-        asyncio.create_task(self._client.start_notify(UUID_READ, handle))
+        # Start notification listener and await it
+        await self._client.start_notify(UUID_READ, handle)
+        logger.info("✓ Notification handler active and ready")
         logger.debug("Notification handler setup complete")
 
     def _handle_partial_packet(self, data: bytearray, notifications: Notifications) -> None:
