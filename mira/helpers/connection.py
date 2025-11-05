@@ -81,6 +81,9 @@ class Connection:
         self._partial_payload: bytearray = bytearray()
         self._reassembly_client_slot: Optional[int] = None 
         self._reassembly_payload_length: Optional[int] = None
+        
+        # Connection lock to prevent concurrent connection attempts
+        self._connection_lock: asyncio.Lock = asyncio.Lock()
 
     def _on_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnection from device.
@@ -170,25 +173,33 @@ class Connection:
         Returns:
             bool: True if connected, False otherwise
         """
-        connected = self._client is not None and self._client.is_connected
-        logger.debug(f"Connection state check for {self._address}: {'Connected' if connected else 'Disconnected'}")
-        return connected
+        try:
+            connected = self._client is not None and self._client.is_connected
+            logger.debug(f"Connection state check for {self._address}: {'Connected' if connected else 'Disconnected'}")
+            return connected
+        except Exception as e:
+            logger.debug(f"Error checking connection state for {self._address}: {e}")
+            return False
 
     async def reconnect(self) -> None:
         """Disconnect and reconnect to device with retry logic.
         
+        Uses a lock to prevent concurrent reconnection attempts which can cause
+        "Operation already in progress" errors.
+        
         Raises:
             Exception: If reconnection fails after all attempts
         """
-        logger.info(f"Initiating reconnection to device at {self._address}")
-        try:
-            await self.disconnect()
-            await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
-            await self.connect()
-            logger.info(f"Successfully reconnected to device at {self._address}")
-        except Exception as e:
-            logger.error(f"Reconnection failed for device at {self._address}: {e}")
-            raise
+        async with self._connection_lock:
+            logger.info(f"Initiating reconnection to device at {self._address}")
+            try:
+                await self.disconnect()
+                await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
+                await self.connect()
+                logger.info(f"Successfully reconnected to device at {self._address}")
+            except Exception as e:
+                logger.error(f"Reconnection failed for device at {self._address}: {e}")
+                raise
 
     async def disconnect(self) -> None:
         """Disconnect from device."""

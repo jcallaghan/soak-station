@@ -92,10 +92,12 @@ async def async_setup_entry(hass, config_entry):
         if not connection.is_connected():
             logger.warning(f"Device at {device_address} not connected, attempting reconnection (Bluetooth proxy compatible)")
             try:
+                # The reconnect method uses a lock to prevent concurrent attempts
                 await connection.reconnect()
                 logger.info(f"Reconnection successful for device at {device_address}")
             except Exception as e:
                 logger.error(f"Reconnection failed for device at {device_address}: {e}")
+                # Don't try to poll if reconnection failed
                 return
         
         try:
