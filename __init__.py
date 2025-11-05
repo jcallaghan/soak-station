@@ -70,6 +70,12 @@ async def async_setup_entry(hass, config_entry):
         await metadata.wait_for_technical_info()
         logger.info(f"✓ Technical info received - SW versions: Valve {metadata.valve_sw_version}, BT {metadata.bt_sw_version}, UI {metadata.ui_sw_version}")
 
+        logger.info("Requesting outlet settings...")
+        await connection.request_outlet_settings()
+        # Give device time to respond with outlet settings
+        await asyncio.sleep(1)
+        logger.info("✓ Outlet settings requested")
+
         logger.info("Requesting initial device state...")
         await connection.request_device_state()
         logger.info("✓ Initial device state received")

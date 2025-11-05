@@ -69,8 +69,20 @@ class SoakStationTemperatureNumber(NumberEntity):
         if the value has changed.
         """
         new_value = self._model.target_temp
-        if new_value is not None and new_value != self._attr_native_value:
-            self._attr_native_value = new_value
+        
+        # Also update min/max limits if metadata has been updated with device settings
+        limits_changed = False
+        if self._metadata.min_temperature and self._attr_native_min_value != self._metadata.min_temperature:
+            self._attr_native_min_value = self._metadata.min_temperature
+            limits_changed = True
+        if self._metadata.max_temperature and self._attr_native_max_value != self._metadata.max_temperature:
+            self._attr_native_max_value = self._metadata.max_temperature
+            limits_changed = True
+        
+        # Update if value or limits changed
+        if (new_value is not None and new_value != self._attr_native_value) or limits_changed:
+            if new_value is not None:
+                self._attr_native_value = new_value
             self.async_write_ha_state()
 
     async def async_set_native_value(self, value: float) -> None:
