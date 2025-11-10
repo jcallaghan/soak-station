@@ -68,8 +68,13 @@ async def async_setup_entry(hass, config_entry):
     try:
         logger.info("Requesting technical info...")
         await connection.request_technical_info()
-        await metadata.wait_for_technical_info()
-        logger.info(f"✓ Technical info received - SW versions: Valve {metadata.valve_sw_version}, BT {metadata.bt_sw_version}, UI {metadata.ui_sw_version}")
+        
+        # Wait for technical info with timeout
+        try:
+            await asyncio.wait_for(metadata.wait_for_technical_info(), timeout=10.0)
+            logger.info(f"✓ Technical info received - SW versions: Valve {metadata.valve_sw_version}, BT {metadata.bt_sw_version}, UI {metadata.ui_sw_version}")
+        except asyncio.TimeoutError:
+            logger.warning("Timeout waiting for technical info response - will retry during polling")
 
         logger.info("Requesting outlet settings...")
         await connection.request_outlet_settings()
