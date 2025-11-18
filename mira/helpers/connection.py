@@ -270,6 +270,9 @@ class Connection:
 
         Args:
             notifications: Handler for received notifications
+            
+        Raises:
+            asyncio.TimeoutError: If notification subscription times out
         """
         logger.debug("Setting up notification handler")
         self._notifications = notifications
@@ -280,10 +283,17 @@ class Connection:
             else:
                 self._handle_new_packet(data, notifications)
 
-        # Start notification listener and await it
-        await self._client.start_notify(UUID_READ, handle)
-        logger.info("✓ Notification handler active and ready")
-        logger.debug("Notification handler setup complete")
+        # Start notification listener with timeout to prevent hanging
+        try:
+            await asyncio.wait_for(
+                self._client.start_notify(UUID_READ, handle),
+                timeout=10.0
+            )
+            logger.info("✓ Notification handler active and ready")
+            logger.debug("Notification handler setup complete")
+        except asyncio.TimeoutError:
+            logger.error("Timeout subscribing to notifications - device may not be ready")
+            raise
 
     def _handle_partial_packet(self, data: bytearray, notifications: Notifications) -> None:
         """Handle continuation of a split packet.

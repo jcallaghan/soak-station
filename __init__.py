@@ -27,6 +27,11 @@ async def async_setup_entry(hass, config_entry):
         logger.info(f"Connecting to device at {device_address} (Bluetooth proxy supported)")
         await connection.connect()
         logger.info(f"✓ Device connection established successfully at {device_address}")
+        
+        # Allow time for service discovery to complete (especially important for Bluetooth proxies)
+        logger.debug("Waiting for service discovery to complete...")
+        await asyncio.sleep(2.0)
+        logger.debug("Service discovery wait complete")
     except Exception as e:
         logger.error(f"Failed to connect to device at {device_address}: {e}")
         raise ConfigEntryNotReady(f"Unable to connect to device: {e}") from e
@@ -61,8 +66,15 @@ async def async_setup_entry(hass, config_entry):
 
     # Subscribe to notifications
     notifications = Notifications(model=data_model, metadata=metadata)
-    await connection.subscribe(notifications)
-    logger.debug("Subscribed notifications handler")
+    try:
+        await connection.subscribe(notifications)
+        logger.debug("Subscribed notifications handler")
+    except asyncio.TimeoutError:
+        logger.warning("Timeout subscribing to notifications - will retry later. The integration will still function.")
+    except Exception as e:
+        logger.error(f"Error subscribing to notifications: {e}")
+        await connection.disconnect()
+        raise ConfigEntryNotReady(f"Failed to subscribe to notifications: {e}") from e
 
     # Start requesting info
     try:
