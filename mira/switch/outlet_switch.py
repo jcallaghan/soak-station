@@ -61,15 +61,30 @@ class SoakStationOutletSwitch(SwitchEntity):
         Args:
             new_state: True to turn on, False to turn off
         """
+        # Optimistically update state immediately for responsive UI
+        self._state = new_state
+        self.async_write_ha_state()
+        
         outlets = [self._model.outlet_1_on, self._model.outlet_2_on]
         outlets[self._outlet_number - 1] = new_state
-        await self._connection.control_outlets(outlets[0], outlets[1], temperature=self._model.target_temp or 38)
+        # Use current target temperature from model, default to 38°C if not set
+        temperature = self._model.target_temp if self._model.target_temp else 38.0
+        
+        try:
+            await self._connection.control_outlets(outlets[0], outlets[1], temperature=temperature)
+            # Device notification will update state if different
+        except Exception as e:
+            # If command fails, revert to model state
+            actual_state = getattr(self._model, f"outlet_{self._outlet_number}_on", None)
+            if actual_state is not None:
+                self._state = actual_state
+                self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs):
         """Turn the outlet on.
         
         Sets the appropriate outlet to on state while maintaining the other outlet's
-        current state. Uses a default temperature of 38°C.
+        current state. Uses the current target temperature from the model.
         """
         await self._update_outlet_state(True)
 
@@ -77,7 +92,7 @@ class SoakStationOutletSwitch(SwitchEntity):
         """Turn the outlet off.
         
         Sets the appropriate outlet to off state while maintaining the other outlet's
-        current state. Uses a default temperature of 38°C.
+        current state. Uses the current target temperature from the model.
         """
         await self._update_outlet_state(False)
 

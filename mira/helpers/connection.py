@@ -23,7 +23,8 @@ from homeassistant.components.bluetooth import (
 from .const import (
     MAGIC_ID, TIMER_RUNNING, OUTLET_RUNNING, OUTLET_STOPPED, TIMER_PAUSED,
     UUID_DEVICE_NAME, UUID_MANUFACTURER, UUID_MODEL_NUMBER, UUID_READ, UUID_WRITE,
-    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, SERVICE_DISCOVERY_DELAY
+    MAX_READ_RETRIES, READ_RETRY_DELAY, MAX_RETRY_DELAY, RECONNECT_DELAY, 
+    SERVICE_DISCOVERY_DELAY, BLUETOOTH_PROXY_DELAY_MULTIPLIER
 )
 from .generic import _get_payload_with_crc, _convert_temperature, _format_bytearray, _split_chunks
 from .notifications import Notifications
@@ -80,6 +81,9 @@ class Connection:
         self._partial_payload: bytearray = bytearray()
         self._reassembly_client_slot: Optional[int] = None 
         self._reassembly_payload_length: Optional[int] = None
+        
+        # Connection lock to prevent concurrent connection attempts
+        self._connection_lock: asyncio.Lock = asyncio.Lock()
 
     def _on_disconnect(self, client: BleakClientWithServiceCache) -> None:
         """Handle disconnection from device.
@@ -87,7 +91,8 @@ class Connection:
         Args:
             client: The BleakClientWithServiceCache that disconnected
         """
-        logger.warning(f"Device at {self._address} disconnected")
+        logger.warning(f"Device at {self._address} disconnected unexpectedly")
+        logger.debug(f"Disconnect callback triggered for {self._address} - client will attempt reconnection on next poll")
 
     def set_client_data(self, client_id: int, client_slot: int) -> None:
         """Set the client ID and slot after pairing.
@@ -113,6 +118,8 @@ class Connection:
             logger.debug(f"Attempting to connect to device at {self._address} using bleak-retry-connector")
             self._peripheral = await self._get_ble_device()
             
+            logger.debug(f"Device discovered via Bluetooth: {self._peripheral.name} at {self._peripheral.address} (RSSI: {getattr(self._peripheral, 'rssi', 'N/A')} dBm)")
+            
             # Use bleak-retry-connector for reliable connection establishment
             self._client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -122,7 +129,21 @@ class Connection:
                 max_attempts=retries,
             )
             
-            logger.info(f"Successfully connected to device at {self._address}")
+            # Get MTU size properly to avoid warning
+            mtu = 'N/A'
+            try:
+                # Try async get_mtu first (preferred method)
+                if hasattr(self._client, 'get_mtu'):
+                    mtu = await self._client.get_mtu()
+                # Fallback to property access, but suppress warnings
+                elif hasattr(self._client, '_mtu_size'):
+                    mtu = self._client._mtu_size
+            except Exception:
+                pass  # MTU not critical, just use N/A
+            
+            logger.info(f"✓ Successfully connected to device at {self._address}")
+            logger.info(f"✓ Connection established - Device: {self._peripheral.name}, MTU: {mtu}, RSSI: {getattr(self._peripheral, 'rssi', 'N/A')} dBm")
+            logger.debug(f"Connection details - Address: {self._address}, Connected: {self._client.is_connected}")
         except Exception as e:
             logger.error(f"Failed to connect to device at {self._address}: {e}")
             raise
@@ -136,14 +157,14 @@ class Connection:
         Raises:
             ConnectionError: If device not found
         """
-        logger.debug(f"Discovering device at address {self._address}")
+        logger.debug(f"Discovering device at address {self._address} (supports Bluetooth proxies)")
         device = async_ble_device_from_address(
             self._hass, self._address, connectable=True
         )
         if not device:
-            logger.debug(f"Device not found at address {self._address}")
+            logger.warning(f"Device not found at address {self._address}. Ensure device is powered on and in range, or check Bluetooth proxy connection.")
             raise ConnectionError("Device not found")
-        logger.debug(f"Found device: {device.name} ({device.address})")
+        logger.debug(f"Found device: {device.name} ({device.address}) - Device is connectable")
         return device
 
     def is_connected(self) -> bool:
@@ -152,31 +173,49 @@ class Connection:
         Returns:
             bool: True if connected, False otherwise
         """
-        return self._client is not None and self._client.is_connected
+        try:
+            connected = self._client is not None and self._client.is_connected
+            logger.debug(f"Connection state check for {self._address}: {'Connected' if connected else 'Disconnected'}")
+            return connected
+        except Exception as e:
+            logger.debug(f"Error checking connection state for {self._address}: {e}")
+            return False
 
     async def reconnect(self) -> None:
         """Disconnect and reconnect to device with retry logic.
         
+        Uses a lock to prevent concurrent reconnection attempts which can cause
+        "Operation already in progress" errors.
+        
         Raises:
             Exception: If reconnection fails after all attempts
         """
-        logger.info(f"Initiating reconnection to device at {self._address}")
-        try:
-            await self.disconnect()
-            await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
-            await self.connect()
-            logger.info(f"Successfully reconnected to device at {self._address}")
-        except Exception as e:
-            logger.error(f"Reconnection failed for device at {self._address}: {e}")
-            raise
+        async with self._connection_lock:
+            logger.info(f"Initiating reconnection to device at {self._address}")
+            try:
+                await self.disconnect()
+                await asyncio.sleep(RECONNECT_DELAY)  # Allow time for clean BLE state
+                await self.connect()
+                
+                # Re-subscribe to notifications after reconnection
+                if self._notifications:
+                    logger.debug("Re-subscribing to notifications after reconnection")
+                    await self.subscribe(self._notifications)
+                
+                logger.info(f"Successfully reconnected to device at {self._address}")
+            except Exception as e:
+                logger.error(f"Reconnection failed for device at {self._address}: {e}")
+                raise
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
-        logger.debug("Disconnecting from device")
+        logger.debug(f"Disconnecting from device at {self._address}")
         self._peripheral = None
         if self._client and self._client.is_connected:
             await self._client.disconnect()
-            logger.debug("Device disconnected")
+            logger.info(f"Device at {self._address} successfully disconnected")
+        else:
+            logger.debug(f"Device at {self._address} was already disconnected")
 
     async def __aenter__(self) -> "Connection":
         """Connect when entering context."""
@@ -226,11 +265,14 @@ class Connection:
         except ValueError as e:
             logger.debug(f"Invalid packet: {e}")
 
-    def subscribe(self, notifications: Notifications) -> None:
+    async def subscribe(self, notifications: Notifications) -> None:
         """Subscribe to device notifications.
 
         Args:
             notifications: Handler for received notifications
+            
+        Raises:
+            asyncio.TimeoutError: If notification subscription times out
         """
         logger.debug("Setting up notification handler")
         self._notifications = notifications
@@ -241,9 +283,17 @@ class Connection:
             else:
                 self._handle_new_packet(data, notifications)
 
-        # Start notification listener
-        asyncio.create_task(self._client.start_notify(UUID_READ, handle))
-        logger.debug("Notification handler setup complete")
+        # Start notification listener with timeout to prevent hanging
+        try:
+            await asyncio.wait_for(
+                self._client.start_notify(UUID_READ, handle),
+                timeout=10.0
+            )
+            logger.info("✓ Notification handler active and ready")
+            logger.debug("Notification handler setup complete")
+        except asyncio.TimeoutError:
+            logger.error("Timeout subscribing to notifications - device may not be ready")
+            raise
 
     def _handle_partial_packet(self, data: bytearray, notifications: Notifications) -> None:
         """Handle continuation of a split packet.
@@ -441,23 +491,58 @@ class Connection:
         logger.debug("Requesting device information")
         
         # Ensure services are resolved before attempting to read
+        # This is especially important when using Bluetooth proxies
         if self.is_connected():
             try:
                 # Try to get services to ensure they are discovered
                 services = self._client.services
                 if not services:
-                    logger.debug("Services not yet discovered, waiting for service resolution")
-                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY)
+                    logger.debug("Services not yet discovered, waiting for service resolution (Bluetooth proxy may need more time)")
+                    await asyncio.sleep(SERVICE_DISCOVERY_DELAY * BLUETOOTH_PROXY_DELAY_MULTIPLIER)
+                    services = self._client.services
+                
+                # Count services safely (BleakGATTServiceCollection doesn't support len())
+                service_count = sum(1 for _ in services) if services else 0
+                logger.debug(f"Found {service_count} services on device")
+                if services:
+                    # Log available services for debugging
+                    for service in services:
+                        logger.debug(f"Service: {service.uuid}")
             except Exception as e:
                 logger.warning(f"Error checking services: {e}")
         
         # Read device info with retry logic
-        device_name = await self._read_with_retry(UUID_DEVICE_NAME, "device name")
-        manufacturer = await self._read_with_retry(UUID_MANUFACTURER, "manufacturer")
-        model_number = await self._read_with_retry(UUID_MODEL_NUMBER, "model number")
+        # Some devices may not expose standard BLE characteristics, so use fallbacks
+        device_name = await self._read_with_retry_or_default(UUID_DEVICE_NAME, "device name", "Mira Device")
+        manufacturer = await self._read_with_retry_or_default(UUID_MANUFACTURER, "manufacturer", "Mira")
+        model_number = await self._read_with_retry_or_default(UUID_MODEL_NUMBER, "model number", "SoakStation")
 
         logger.info(f"Device info - name: {device_name}, manufacturer: {manufacturer}, model: {model_number}")
         return {'name': device_name, 'manufacturer': manufacturer, 'model': model_number}
+    
+    async def _read_with_retry_or_default(self, characteristic: str, char_name: str, default_value: str,
+                                         max_retries: int = MAX_READ_RETRIES, 
+                                         base_delay: float = READ_RETRY_DELAY) -> str:
+        """Read a characteristic with retry logic, returning a default value if not available.
+        
+        Args:
+            characteristic: UUID of characteristic to read
+            char_name: Human-readable name for logging
+            default_value: Default value to return if characteristic not found
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay between retries (exponentially increased)
+            
+        Returns:
+            str: Decoded string from characteristic or default value
+        """
+        try:
+            return await self._read_with_retry(characteristic, char_name, max_retries, base_delay)
+        except BleakCharacteristicNotFoundError:
+            logger.info(f"Characteristic {char_name} not available, using default: {default_value}")
+            return default_value
+        except BleakError as e:
+            logger.warning(f"Failed to read {char_name}, using default: {default_value}. Error: {e}")
+            return default_value
     
     async def _read_with_retry(self, characteristic: str, char_name: str, 
                               max_retries: int = MAX_READ_RETRIES, 
@@ -485,7 +570,7 @@ class Connection:
                 logger.debug(f"Successfully read {char_name}: {result}")
                 return result
             except BleakCharacteristicNotFoundError as e:
-                logger.warning(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
+                logger.debug(f"Characteristic {char_name} ({characteristic}) not found (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
                     # Exponential backoff with cap: delay increases with each attempt
                     delay = min(base_delay * (2 ** attempt), MAX_RETRY_DELAY)
@@ -498,7 +583,7 @@ class Connection:
                         except Exception:
                             pass
                 else:
-                    logger.error(f"Failed to read {char_name} after {max_retries} attempts")
+                    logger.debug(f"Failed to read {char_name} after {max_retries} attempts")
                     raise
             except BleakError as e:
                 logger.warning(f"BLE error reading {char_name}: {e} (attempt {attempt + 1}/{max_retries})")

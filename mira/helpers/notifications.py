@@ -177,24 +177,28 @@ class Notifications:
             slot: Client slot number
             payload: Packet payload containing device state
         """
-        logger.debug("Processing device state packet")
+        logger.debug(f"Processing device state packet (length: {len(payload)}, bytes: {payload.hex()})")
         # Validate payload length
-        if len(payload) < 8:
-            logger.debug(f"Unexpected payload length for device state: {len(payload)}")
+        # Expected layout: [0]=timer state, [1:3]=target temp, [3:5]=actual temp,
+        #                  [5]=outlet1, [6]=outlet2, [7:9]=remaining seconds
+        # Total: 9 bytes minimum (some packets may have a 10th byte for future use)
+        if len(payload) < 9:
+            logger.warning(f"Unexpected payload length for device state: {len(payload)} (expected at least 9)")
             return False
 
-        # Extract timer state
-        timer_state: Optional[TimerState] = TIMER_STATE_MAP.get(payload[1])
+        # Extract timer state from byte 0 (fixed bug: was incorrectly using byte 1)
+        # Note: This differs from the 11-byte control packet where byte 0 is the type field
+        timer_state: Optional[TimerState] = TIMER_STATE_MAP.get(payload[0])
         if timer_state is None:
-            logger.debug(f"Unknown timer state value: {payload[1]}")
+            logger.warning(f"Unknown timer state value: {payload[0]} in payload: {payload.hex()}")
             return False
 
         # Extract temperature and state information
         target_temperature: float = _convert_temperature_reverse(payload[1:3])
         actual_temperature: float = _convert_temperature_reverse(payload[3:5])
-        remaining_seconds: int = struct.unpack(">H", payload[7:9])[0]
         outlet_state_1: bool = payload[5] == OUTLET_RUNNING
         outlet_state_2: bool = payload[6] == OUTLET_RUNNING
+        remaining_seconds: int = struct.unpack(">H", payload[7:9])[0]
 
         logger.debug(f"Device state - timer: {timer_state}, target temp: {target_temperature}, "
                     f"actual temp: {actual_temperature}, remaining: {remaining_seconds}s, "
